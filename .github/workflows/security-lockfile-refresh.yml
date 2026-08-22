@@ -1,0 +1,44 @@
+name: Security lockfile refresh
+
+on:
+  push:
+    branches:
+      - security/brace-expansion-2026-08
+
+permissions:
+  contents: write
+
+jobs:
+  refresh-lockfile:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install pnpm
+        run: npm install --global pnpm@9.15.9
+      - name: Regenerate lockfile without lifecycle scripts
+        run: pnpm install --lockfile-only --ignore-scripts
+      - name: Verify patched brace-expansion lines
+        shell: bash
+        run: |
+          grep -q "brace-expansion@1.1.18:" pnpm-lock.yaml
+          grep -q "brace-expansion@2.1.4:" pnpm-lock.yaml
+          ! grep -q "brace-expansion@1.1.11:" pnpm-lock.yaml
+          ! grep -q "brace-expansion@2.0.1:" pnpm-lock.yaml
+      - name: Commit regenerated lockfile
+        shell: bash
+        run: |
+          if git diff --quiet -- pnpm-lock.yaml; then
+            echo "No lockfile change produced" >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- pnpm-lock.yaml
+          git commit -m "chore: regenerate lockfile for brace-expansion fix"
+          git push
