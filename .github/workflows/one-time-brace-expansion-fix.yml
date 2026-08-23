@@ -1,0 +1,71 @@
+name: One-time brace-expansion security remediation
+
+on:
+  push:
+    branches:
+      - security/brace-expansion-cve-2026
+
+permissions:
+  contents: write
+
+jobs:
+  remediate:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@9.15.9 --activate
+      - name: Patch vulnerable 1.x and 2.x resolutions
+        shell: bash
+        run: |
+          I1="$(npm view brace-expansion@1.1.18 dist.integrity)"
+          I2="$(npm view brace-expansion@2.1.4 dist.integrity)"
+          export I1 I2
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+          p = Path('pnpm-lock.yaml')
+          s = p.read_text()
+          if 'brace-expansion@1.1.11' not in s or 'brace-expansion@2.0.1' not in s:
+              raise SystemExit('Expected vulnerable brace-expansion resolutions not found')
+          replacements = {
+            'brace-expansion@1.1.11': 'brace-expansion@1.1.18',
+            'brace-expansion: 1.1.11': 'brace-expansion: 1.1.18',
+            'sha512-iCuPHDFgrHX7H2vEI/5xpz07zSHB00TpugqhmYtVmMO6518mCuRMoOYFldEBl0g187ufozdaHgWKcYFb61qGiA==': os.environ['I1'],
+            'brace-expansion@2.0.1': 'brace-expansion@2.1.4',
+            'brace-expansion: 2.0.1': 'brace-expansion: 2.1.4',
+            'sha512-XnAIvQ8eM+kC6aULx6wuQiwVsnzsi9d3WxzV3FpWTGA19F621kwdbsAcFKXgKUHZWsy+mY6iL1sHTxWEFCytDA==': os.environ['I2'],
+          }
+          for old, new in replacements.items():
+              s = s.replace(old, new)
+          p.write_text(s)
+          PY
+      - name: Validate lockfile and install
+        shell: bash
+        run: |
+          ! grep -q 'brace-expansion@1.1.11' pnpm-lock.yaml
+          ! grep -q 'brace-expansion@2.0.1' pnpm-lock.yaml
+          grep -q 'brace-expansion@1.1.18' pnpm-lock.yaml
+          grep -q 'brace-expansion@2.1.4' pnpm-lock.yaml
+          pnpm install --frozen-lockfile --ignore-scripts
+          pnpm why brace-expansion
+          git diff --check -- pnpm-lock.yaml
+      - name: Commit validated lockfile only
+        shell: bash
+        run: |
+          rm .github/workflows/one-time-brace-expansion-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- pnpm-lock.yaml
+          git add -u -- .github/workflows/one-time-brace-expansion-fix.yml
+          git diff --cached --check
+          git commit -m 'fix(deps): patch brace-expansion DoS advisories'
+          git push origin HEAD:${{ github.ref_name }}
